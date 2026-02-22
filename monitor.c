@@ -8,7 +8,7 @@
 #include <sys/sysinfo.h> // sysconf
 #include <pwd.h>      // getpwuid_r
 #include <errno.h>
-#include <limits.h>   // INT_MAX for atoi safety
+#include <limits.h>   // INT_MAX for strtol safety
 #include <time.h>     // nanosleep if needed
 
 // Constants
@@ -16,6 +16,14 @@
 #define MAX_PIDS 10000
 #define MAX_USERS 1000
 #define BUFFER_SIZE 4096
+
+// Define DT_DIR if not available (common value 4)
+#ifndef DT_DIR
+#define DT_DIR 4
+#endif
+#ifndef DT_UNKNOWN
+#define DT_UNKNOWN 0
+#endif
 
 // Global structures for extensibility
 typedef struct {
@@ -92,8 +100,9 @@ int is_pid_dir(const struct dirent *entry) {
     if (entry->d_name[0] == '.')
         return 0;
 
-    // Check d_type if available (DT_DIR == 4)
-    if (entry->d_type != 0 && entry->d_type != DT_DIR)
+    // Check d_type if available (DT_DIR == 4, skip if not UNKNOWN)
+    unsigned char dtype = entry->d_type;
+    if (dtype != DT_UNKNOWN && dtype != DT_DIR)
         return 0;
 
     // Check all digits and reasonable length
