@@ -8,16 +8,16 @@
 #include <sys/sysinfo.h> // sysconf
 #include <pwd.h>      // getpwuid_r
 #include <errno.h>
-#include <limits.h>   // INT_MAX for strtol safety
-#include <time.h>     // nanosleep if needed
+#include <limits.h>   // INT_MAX
+#include <time.h>
 
 // Constants
 #define MAX_PATH 256
-#define MAX_PIDS 20000  // increased for full print
+#define MAX_PIDS 20000
 #define MAX_USERS 1000
 #define BUFFER_SIZE 4096
 
-// Define DT_DIR if not available (common value 4)
+// Define DT_DIR if not available
 #ifndef DT_DIR
 #define DT_DIR 4
 #endif
@@ -25,20 +25,27 @@
 #define DT_UNKNOWN 0
 #endif
 
-// Global structures for extensibility
 typedef struct {
-    int pid;   // use int for pid_t portability
+    int pid;
     uid_t uid;
-    char *username;  // will alloc later
+    char *username;
+    unsigned long utime;     // field 14: user ticks
+    unsigned long stime;     // field 15: kernel ticks
+    unsigned long starttime; // field 22: start ticks
+    double uptime_secs;      // process uptime in seconds
+    double cpu_secs;         // total cpu time in seconds (placeholder)
 } ProcessInfo;
 
 ProcessInfo *processes;
 int num_processes = 0;
+long clk_tck;  // global clock ticks per second
 
-// Function prototypes
+// Prototypes
 int enumerate_pids(ProcessInfo *procs, int max_procs);
 int is_pid_dir(const struct dirent *entry);
-void print_all_pids(void);  // new: print ALL
+int parse_stat(int pid, ProcessInfo *info);
+double get_uptime_secs(void);
+void print_all_info(void);
 
 int main(int argc, char *argv[]) {
     if (argc != 2) {
@@ -47,9 +54,16 @@ int main(int argc, char *argv[]) {
     }
     int duration = atoi(argv[1]);
     if (duration <= 0) {
-        fprintf(stderr, "Duration must be positive integer\n");
+        fprintf(stderr, "Duration must be positive\n");
         return 1;
     }
+
+    clk_tck = sysconf(_SC_CLK_TCK);
+    if (clk_tck <= 0) {
+        perror("sysconf CLK_TCK");
+        return 1;
+    }
+    printf("CLK_TCK: %ld\n", clk_tck);
 
     processes = malloc(MAX_PIDS * sizeof(ProcessInfo));
     if (!processes) {
@@ -57,15 +71,22 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    // Step 1: Test enumeration
-    printf("Testing PID enumeration (ALL PIDs):\n");
+    // Step 2: Enumerate + parse stat
+    printf("Enumerating and parsing /proc/[pid]/stat...\n");
     num_processes = enumerate_pids(processes, MAX_PIDS);
-    if (num_processes > 0) {
-        print_all_pids();
-        printf("\nTotal PIDs found: %d\n", num_processes);
-    } else {
-        printf("No PIDs found!\n");
+    int parsed = 0;
+    for (int i = 0; i < num_processes; i++) {
+        if (parse_stat(processes[i].pid, &processes[i])) {
+            double uptime = get_uptime_secs() - processes[i].uptime_secs;
+            processes[i].uptime_secs = uptime;
+            processes[i].cpu_secs = (processes[i].utime + processes[i].stime) / (double)clk_tck;
+            parsed++;
+        }
     }
+    printf("Parsed %d/%d processes\n", parsed, num_processes);
+
+    print_all_info();
+    printf("Total PIDs: %d\n", num_processes);
 
     free(processes);
     return 0;
@@ -80,13 +101,16 @@ int enumerate_pids(ProcessInfo *procs, int max_procs) {
 
     int count = 0;
     struct dirent *entry;
-    while ((entry = readdir(procdir)) != NULL && count < max_procs) {
+    while ((entry = readdir(procdir)) && count < max_procs) {
         if (is_pid_dir(entry)) {
             long pid_long = strtol(entry->d_name, NULL, 10);
             if (pid_long > 0 && pid_long <= INT_MAX) {
                 procs[count].pid = (int)pid_long;
-                procs[count].uid = 0;  // placeholder
-                procs[count].username = NULL;  // placeholder
+                procs[count].uid = 0;
+                procs[count].username = NULL;
+                procs[count].utime = procs[count].stime = procs[count].starttime = 0;
+                procs[count].uptime_secs = 0;
+                procs[count].cpu_secs = 0;
                 count++;
             }
         }
@@ -96,38 +120,68 @@ int enumerate_pids(ProcessInfo *procs, int max_procs) {
 }
 
 int is_pid_dir(const struct dirent *entry) {
-    // Skip . and .. 
-    if (entry->d_name[0] == '.')
-        return 0;
-
-    // Check d_type if available (DT_DIR == 4, skip if not UNKNOWN)
+    if (entry->d_name[0] == '.') return 0;
     unsigned char dtype = entry->d_type;
-    if (dtype != DT_UNKNOWN && dtype != DT_DIR)
-        return 0;
-
-    // Check all digits and reasonable length
+    if (dtype != DT_UNKNOWN && dtype != DT_DIR) return 0;
     int len = strlen(entry->d_name);
-    if (len < 1 || len > 10) return 0;  // PIDs won't exceed 10 digits soon
+    if (len < 1 || len > 10) return 0;
     for (int i = 0; i < len; i++) {
-        if (!isdigit((unsigned char)entry->d_name[i]))
-            return 0;
+        if (!isdigit((unsigned char)entry->d_name[i])) return 0;
     }
     return 1;
 }
 
-void print_all_pids(void) {
-    // Sort PIDs ascending for nicer output (bubble sort simple)
+int parse_stat(int pid, ProcessInfo *info) {
+    char path[MAX_PATH];
+    snprintf(path, MAX_PATH, "/proc/%d/stat", pid);
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+
+    // Format: %d(name)%c%... skip to fields 14(utime),15(stime),22(starttime)
+    // Use %*s %*d etc for skips (52 fields total, but partial)
+    int success = fscanf(f,
+        "%*d"        //1 pid
+        " %*s"       //2 comm (in parens, tricky)
+        " %*c"       //3 state
+        " %*d %*d %*d %*d %*d"
+        " %*d %*d %*d %*d %*d"
+        " %*d %*d %*d %*d %*d"
+        " %*d %*d %lu %lu"    //14 utime, 15 stime
+        " %*d %*d %*d %*d %*d"
+        " %*d %*d %*d %*d %*d"
+        " %lu"       //22 starttime
+        " %*[^ ]",   // skip rest
+        &info->utime, &info->stime, &info->starttime) == 3;
+
+    fclose(f);
+    return success;
+}
+
+double get_uptime_secs(void) {
+    FILE *f = fopen("/proc/uptime", "r");
+    double uptime = 0.0;
+    if (f) {
+        fscanf(f, "%lf", &uptime);
+        fclose(f);
+    }
+    return uptime;
+}
+
+void print_all_info(void) {
+    // Sort by PID
     for (int i = 0; i < num_processes - 1; i++) {
         for (int j = 0; j < num_processes - i - 1; j++) {
             if (processes[j].pid > processes[j+1].pid) {
-                int temp = processes[j].pid;
-                processes[j].pid = processes[j+1].pid;
-                processes[j+1].pid = temp;
+                ProcessInfo temp = processes[j];
+                processes[j] = processes[j+1];
+                processes[j+1] = temp;
             }
         }
     }
-    // Print all
-    for (int i = 0; i < num_processes; i++) {
-        printf("PID: %d\n", processes[i].pid);
+    // Print first 20 + summary
+    printf("\nSample (first 20):\n");
+    printf("PID\tUptime(s)\tCPU(s)\n");
+    for (int i = 0; i < num_processes && i < 20; i++) {
+        printf("%d\t%.1f\t\t%.3f\n", processes[i].pid, processes[i].uptime_secs, processes[i].cpu_secs);
     }
 }
