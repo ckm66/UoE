@@ -3,21 +3,23 @@
 #include <dirent.h>
 #include <ctype.h>
 #include <string.h>
-#include <unistd.h>  // for sleep, getopt
-#include <time.h>    // for nanosleep if needed
-#include <sys/sysinfo.h>  // sysconf
-#include <pwd.h>     // getpwuid_r
+#include <unistd.h>    // sleep, getopt
+#include <sys/types.h> // pid_t, uid_t
+#include <sys/sysinfo.h> // sysconf
+#include <pwd.h>      // getpwuid_r
 #include <errno.h>
+#include <limits.h>   // INT_MAX for atoi safety
+#include <time.h>     // nanosleep if needed
 
 // Constants
 #define MAX_PATH 256
-#define MAX_PIDS 10000  // reasonable limit
+#define MAX_PIDS 10000
 #define MAX_USERS 1000
 #define BUFFER_SIZE 4096
 
 // Global structures for extensibility
 typedef struct {
-    pid_t pid;
+    int pid;   // use int for pid_t portability
     uid_t uid;
     char *username;  // will alloc later
 } ProcessInfo;
@@ -72,11 +74,13 @@ int enumerate_pids(ProcessInfo *procs, int max_procs) {
     struct dirent *entry;
     while ((entry = readdir(procdir)) != NULL && count < max_procs) {
         if (is_pid_dir(entry)) {
-            pid_t pid = atoi(entry->d_name);
-            procs[count].pid = pid;
-            procs[count].uid = 0;  // placeholder
-            procs[count].username = NULL;  // placeholder
-            count++;
+            long pid_long = strtol(entry->d_name, NULL, 10);
+            if (pid_long > 0 && pid_long <= INT_MAX) {
+                procs[count].pid = (int)pid_long;
+                procs[count].uid = 0;  // placeholder
+                procs[count].username = NULL;  // placeholder
+                count++;
+            }
         }
     }
     closedir(procdir);
@@ -84,10 +88,19 @@ int enumerate_pids(ProcessInfo *procs, int max_procs) {
 }
 
 int is_pid_dir(const struct dirent *entry) {
-    if (entry->d_type != DT_DIR)
+    // Skip . and .. 
+    if (entry->d_name[0] == '.')
         return 0;
-    for (char *p = entry->d_name; *p; p++) {
-        if (!isdigit((unsigned char)*p))
+
+    // Check d_type if available (DT_DIR == 4)
+    if (entry->d_type != 0 && entry->d_type != DT_DIR)
+        return 0;
+
+    // Check all digits and reasonable length
+    int len = strlen(entry->d_name);
+    if (len < 1 || len > 10) return 0;  // PIDs won't exceed 10 digits soon
+    for (int i = 0; i < len; i++) {
+        if (!isdigit((unsigned char)entry->d_name[i]))
             return 0;
     }
     return 1;
