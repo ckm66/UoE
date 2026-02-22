@@ -13,7 +13,7 @@
 
 // Constants
 #define MAX_PATH 256
-#define MAX_PIDS 10000
+#define MAX_PIDS 20000  // increased for full print
 #define MAX_USERS 1000
 #define BUFFER_SIZE 4096
 
@@ -38,7 +38,7 @@ int num_processes = 0;
 // Function prototypes
 int enumerate_pids(ProcessInfo *procs, int max_procs);
 int is_pid_dir(const struct dirent *entry);
-void print_pids(void);
+void print_all_pids(void);  // new: print ALL
 
 int main(int argc, char *argv[]) {
     if (argc != 2) {
@@ -58,11 +58,11 @@ int main(int argc, char *argv[]) {
     }
 
     // Step 1: Test enumeration
-    printf("Testing PID enumeration (first 20 PIDs):\n");
+    printf("Testing PID enumeration (ALL PIDs):\n");
     num_processes = enumerate_pids(processes, MAX_PIDS);
     if (num_processes > 0) {
-        print_pids();
-        printf("Total PIDs found: %d\n", num_processes);
+        print_all_pids();
+        printf("\nTotal PIDs found: %d\n", num_processes);
     } else {
         printf("No PIDs found!\n");
     }
@@ -115,8 +115,19 @@ int is_pid_dir(const struct dirent *entry) {
     return 1;
 }
 
-void print_pids(void) {
-    for (int i = 0; i < num_processes && i < 20; i++) {
+void print_all_pids(void) {
+    // Sort PIDs ascending for nicer output (bubble sort simple)
+    for (int i = 0; i < num_processes - 1; i++) {
+        for (int j = 0; j < num_processes - i - 1; j++) {
+            if (processes[j].pid > processes[j+1].pid) {
+                int temp = processes[j].pid;
+                processes[j].pid = processes[j+1].pid;
+                processes[j+1].pid = temp;
+            }
+        }
+    }
+    // Print all
+    for (int i = 0; i < num_processes; i++) {
         printf("PID: %d\n", processes[i].pid);
     }
 }
