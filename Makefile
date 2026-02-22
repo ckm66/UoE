@@ -1,10 +1,11 @@
-CC      = gcc
-CFLAGS  = -Wall -Wextra -O2
+CC=gcc
+CFLAGS=-Wall -Wextra -std=c99 -O2
+TARGET=monitor.exe
 
-all: monitor.exe
-
-monitor.exe: monitor.c
-	$(CC) $(CFLAGS) -o monitor.exe monitor.c
+$(TARGET): monitor.c
+	$(CC) $(CFLAGS) -o $@ $^
 
 clean:
-	rm -f monitor.exe *.o
+	rm -f $(TARGET) *.o
+
+.PHONY: clean
