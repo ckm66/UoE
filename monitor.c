@@ -80,7 +80,6 @@ int main(int argc, char *argv[]) {
     signal(SIGINT, cleanup);
 
     monitor_start_uptime = get_uptime_secs();
-    printf("Monitor running for %d seconds...\n", duration);
 
     // 2. Monitoring Loop
     for (int tick = 0; tick < duration && keep_running; tick++) {
@@ -303,4 +302,5 @@ void print_ranking(void) {
         }
     }
 }
+
 
