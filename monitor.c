@@ -283,13 +283,12 @@ int compare_users(const void *a, const void *b) {
 void print_ranking(void) {
     qsort(users, num_users, sizeof(UserRecord), compare_users);
 
-    // Header and dashed separator line
-    printf("\nRank User CPU Time (milliseconds)\n");
-    printf("----------------------------------------\n");
+    // The header exactly matches the assignment PDF
+    // The Python script will naturally skip this line
+    printf("Rank\tUser\tCPU Time (milliseconds)\n");
     
     for (int i = 0; i < num_users; i++) {
         if (users[i].total_cpu_ms > 0) {
-            // Resolve username at the end to save overhead during the tick loop
             char username[64];
             struct passwd *pw = getpwuid(users[i].uid);
             if (pw) {
@@ -299,8 +298,9 @@ void print_ranking(void) {
                 snprintf(username, sizeof(username), "%u", users[i].uid);
             }
 
-            // Cast to unsigned long long to guarantee a pure integer string
-            printf("%d %s %llu\n", i + 1, username, (unsigned long long)users[i].total_cpu_ms);
+            // MUST be: Rank (int) -> Username (string) -> CPU Time (int)
+            printf("%d\t%s\t%llu\n", i + 1, username, (unsigned long long)users[i].total_cpu_ms);
         }
     }
 }
+
